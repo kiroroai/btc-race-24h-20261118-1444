@@ -23,15 +23,24 @@
 //   falls STOP_BPS under the best close since entry or under the entry fill
 //   (the dip became a collapse), or after TIME_STOP_BARS bars in the trade
 //   (the recovery is not coming on this trade's clock), whichever is first.
+//   The time stop has one grace rule: a trade that is still printing new
+//   highs when the clock runs out is not stalled, so it gets up to
+//   TIME_STOP_GRACE_BARS more bars; only a trade whose close has slipped
+//   STALL_BPS under its best close is cut at the clock. On the dev window
+//   the second trade peaks early and then drifts down, so it is already
+//   stalled at the clock and exits there either way; the grace only saves
+//   a trade whose recovery is still alive at the end of its clock.
 // - Every order carries max_slippage_bps 100, so a fill more than 1% past
 //   the close it was decided on is refused rather than chased.
 //
 // Parameter choice: graded on this competition's dev window, the entry
 // threshold is profitable across -90 to -160 bps and the gain exit across
-// 150 to 250 bps, with the 120-bar lookback and a 480-bar time stop; the
-// values below sit in the middle of that plateau rather than on a spike.
-// On the dev window this grades at about +$18.5 net PnL over 4 trades with
-// a maximum drawdown under 1%.
+// 150 to 250 bps, with the 120-bar lookback; the time stop sits at 420
+// bars, in the middle of the 400-430 plateau (about +$22-23 net PnL), where
+// the second trade is cut before its recovery fades instead of being held
+// to 480 bars. The values below sit in the middle of those plateaus rather
+// than on a spike. On the dev window this grades at about +$22.9 net PnL
+// over 4 trades with a maximum drawdown under 1%.
 //
 // Everything here is a pure function of the bars seen so far: no wall
 // clock, no network, no files, no randomness. Two runs over the same
@@ -47,7 +56,9 @@ const LOOKBACK_BARS = 120; // trailing-return lookback, in bars
 const ENTRY_BPS = -100; // buy when the trailing return falls under this
 const GAIN_BPS = 200; // sell when the close stands this far over the fill
 const STOP_BPS = 150; // sell this far under the best close / entry fill
-const TIME_STOP_BARS = 480; // sell after this many bars in a trade
+const TIME_STOP_BARS = 420; // sell after this many bars in a trade, unless it is still making highs
+const TIME_STOP_GRACE_BARS = 120; // extra bars granted while the trade keeps printing new highs
+const STALL_BPS = 30; // a trade counts as stalled once the close sits this far under its best close
 const COOLDOWN_BARS = 5; // flat bars required after an exit before re-entry
 const SIZE_FRAC = 0.999; // share of the cash balance a buy deploys
 const MAX_SLIPPAGE_BPS = 100; // every order carries this cap
@@ -138,7 +149,10 @@ function decide(state: BarsState, batch: Batch): OrderInput[] {
     const gained = fillPrice > 0 && close >= fillPrice * (1 + GAIN_BPS / 10_000);
     const fellFromPeak = bestClose > 0 && close < bestClose * (1 - STOP_BPS / 10_000);
     const fellFromFill = fillPrice > 0 && close < fillPrice * (1 - STOP_BPS / 10_000);
-    const stale = tradeBars >= TIME_STOP_BARS;
+    const stalled = close < bestClose * (1 - STALL_BPS / 10_000);
+    const stale =
+      tradeBars >= TIME_STOP_BARS + TIME_STOP_GRACE_BARS ||
+      (tradeBars >= TIME_STOP_BARS && stalled);
     if (gained || fellFromPeak || fellFromFill || stale) {
       orderOut = 'sell';
       return [{ side: 'sell', symbol: SYMBOL, qty: held!.qty, max_slippage_bps: MAX_SLIPPAGE_BPS }];
